@@ -2,8 +2,11 @@ package logger
 
 import (
 	"os"
+	"path/filepath"
+	"strconv"
 
 	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
 )
 
 type Logger interface {
@@ -21,11 +24,22 @@ type ZeroLogger struct {
 	log zerolog.Logger
 }
 
+func init() {
+	zerolog.CallerMarshalFunc = func(pc uintptr, file string, line int) string {
+		return filepath.Base(file) + ":" + strconv.Itoa(line)
+	}
+	log.Logger = log.Logger.Output(zerolog.ConsoleWriter{Out: os.Stderr}).With().Timestamp().Caller().Logger()
+}
+
 func NewLogger() Logger {
 	zerolog.TimeFieldFormat = zerolog.TimeFormatUnix
 	return &ZeroLogger{
-		log: zerolog.New(os.Stdout).With().Timestamp().Logger(),
+		log: log.Logger,
 	}
+}
+
+func (l *ZeroLogger) InternalLogger() zerolog.Logger {
+	return l.log
 }
 
 func (l *ZeroLogger) Info(msg string) {

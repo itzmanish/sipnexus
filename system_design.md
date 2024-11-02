@@ -51,7 +51,7 @@ This document outlines the design of a scalable SIP system in Go (Golang) that c
 - **High Availability:** Stateless architecture with failover mechanisms.
 - **Implementation Language:** Go (Golang).
 - **Tools Integration:**
-  - **Audio Multiplexer:** Use [audio-multiplexer-go](https://github.com/itzmanish/audio-multiplexer-go) for audio mixing and transcoding.
+  - **Audio Multiplexer:** Use [audio-multiplexer-go](https://github.com/itzmanish/avmuxer) for audio mixing and transcoding.
   - **SIP Library:** Use [sipgox](https://github.com/emiago/sipgox) for SIP functionalities.
 
 ---
@@ -123,7 +123,7 @@ The system consists of the following key components:
 
 **Implementation Details:**
 
-- **Audio Multiplexer:** Use [audio-multiplexer-go](https://github.com/itzmanish/audio-multiplexer-go) for transcoding.
+- **Audio Multiplexer:** Use [audio-multiplexer-go](https://github.com/itzmanish/avmuxer) for transcoding.
 - **Concurrency:** Use Goroutines for efficient transcoding.
 - **Service Interface:** Expose transcoding functions internally.
 
@@ -263,7 +263,7 @@ The system consists of the following key components:
 - **Programming Language:** Go (Golang)
 - **SIP Library:** [sipgox](https://github.com/emiago/sipgox)
 - **Media Handling:** [pion/WebRTC](https://github.com/pion/webrtc)
-- **Audio Multiplexing and Transcoding:** [audio-multiplexer-go](https://github.com/itzmanish/audio-multiplexer-go)
+- **Audio Multiplexing and Transcoding:** [audio-multiplexer-go](https://github.com/itzmanish/avmuxer)
 - **Load Balancing:** Consistent Hashing implemented within the application
 - **Monitoring:** Prometheus and Grafana
 - **Containerization:** Docker
@@ -455,7 +455,7 @@ The proposed system design leverages Go's performance and the capabilities of `s
 
 - [sipgox GitHub Repository](https://github.com/emiago/sipgox)
 - [pion/WebRTC GitHub Repository](https://github.com/pion/webrtc)
-- [audio-multiplexer-go GitHub Repository](https://github.com/itzmanish/audio-multiplexer-go)
+- [audio-multiplexer-go GitHub Repository](https://github.com/itzmanish/avmuxer)
 - [Consistent Hashing Algorithm](https://en.wikipedia.org/wiki/Consistent_hashing)
 - [RFC 3261 - SIP: Session Initiation Protocol](https://tools.ietf.org/html/rfc3261)
 - [RFC 2833 - RTP Payload for DTMF Digits](https://tools.ietf.org/html/rfc2833)

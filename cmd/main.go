@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"net/http"
 
@@ -28,18 +27,16 @@ func main() {
 	http.Handle("/metrics", promhttp.Handler())
 	go http.ListenAndServe(":8080", nil)
 
+	// Create a deadline to wait for
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
 	// Start the SIP server
 	go func() {
-		if err := sipServer.Start(); err != nil {
+		if err := sipServer.Start(ctx); err != nil {
 			log.Fatal("Failed to start SIP server: " + err.Error())
 		}
 	}()
-
-	// Initialize and connect components
-	sipServer.mediaGateway.SetTranscodingService(sipServer.transcodingService)
-
-	// Start DTMF handler
-	sipServer.dtmfHandler.Start()
 
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal, 1)
@@ -47,14 +44,11 @@ func main() {
 	<-quit
 
 	log.Info("Shutting down server...")
-
-	// Create a deadline to wait for
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	cancel()
 
 	// Doesn't block if no connections, but will otherwise wait
 	// until the timeout deadline.
-	if err := sipServer.Shutdown(ctx); err != nil {
+	if err := sipServer.Shutdown(); err != nil {
 		log.Error("Server forced to shutdown: " + err.Error())
 	}
 

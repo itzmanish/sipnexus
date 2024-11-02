@@ -4,34 +4,27 @@ import (
 	"context"
 	"fmt"
 	"sync"
-	"time"
 
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 	"github.com/itzmanish/sipnexus/pkg/logger"
-	"github.com/pion/sdp/v3"
+	"github.com/itzmanish/sipnexus/pkg/utils"
 )
 
 type Server struct {
-	logger              logger.Logger
-	srv                 *sipgo.Server
-	instances           []string
-	hashRing            *ConsistentHash
-	mu                  sync.RWMutex
-	mediaGateway        *MediaGateway
-	transcodingService  *TranscodingService
-	conferencingService *ConferencingService
-	dtmfHandler         *DTMFHandler
+	logger         logger.Logger
+	srv            *sipgo.Server
+	instances      []string
+	hashRing       *ConsistentHash
+	mu             sync.RWMutex
+	sessionManager *SessionManager
 }
 
-func NewServer(logger logger.Logger) (*Server, error) {
+func NewServer(log logger.Logger) (*Server, error) {
 	s := &Server{
-		logger:              logger,
-		instances:           []string{"instance1", "instance2", "instance3"},
-		mediaGateway:        NewMediaGateway(logger),
-		transcodingService:  NewTranscodingService(logger),
-		conferencingService: NewConferencingService(logger),
-		dtmfHandler:         NewDTMFHandler(logger, 101), // Assuming 101 is the DTMF payload type
+		logger:         log,
+		instances:      []string{"instance1", "instance2", "instance3"},
+		sessionManager: NewSessionManager(),
 	}
 
 	// Initialize consistent hash ring
@@ -40,61 +33,45 @@ func NewServer(logger logger.Logger) (*Server, error) {
 		s.hashRing.Add(instance)
 	}
 
+	ua, err := sipgo.NewUA(sipgo.WithUserAgent("sipnexus"))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create UA: %w", err)
+	}
 	// Create a new SIP server
-	srv, err := sipgo.NewServer(sipgo.ServerConfig{
-		Host:           "0.0.0.0",
-		Port:           5060,
-		Handler:        s,
-		Network:        "udp",
-		Logger:         logger,
-		AllowedPeers:   []string{"0.0.0.0/0"},
-		SipDomain:      "example.com",
-		AllowedDomains: []string{"example.com"},
-	})
+	srv, err := sipgo.NewServer(ua, sipgo.WithServerLogger(log.(*logger.ZeroLogger).InternalLogger()))
 	if err != nil {
 		return nil, fmt.Errorf("failed to create SIP server: %w", err)
 	}
+
+	// srv.ServeRequest(func(r *sip.Request) {
+	// 	callID := r.CallID()
+	// 	instance := s.getInstanceForRequest(callID.String())
+
+	// 	if instance != "instance1" { // Assume this is instance1
+	// 		s.logger.Info("Request routed to different instance: " + instance)
+	// 		return
+	// 	}
+	// })
+
+	srv.OnAck(s.handleAck)
+	srv.OnOptions(s.handleOptions)
+	srv.OnInvite(s.handleInvite)
+	srv.OnBye(s.handleBye)
+	srv.OnCancel(s.handleCancel)
+	srv.OnRegister(s.handleRegister)
 
 	s.srv = srv
 	return s, nil
 }
 
-func (s *Server) Start() error {
+func (s *Server) Start(ctx context.Context) error {
 	s.logger.Info("Starting SIP server...")
-	return s.srv.ListenAndServe()
+	return s.srv.ListenAndServe(ctx, "udp", "0.0.0.0:5060")
 }
 
-func (s *Server) Shutdown(ctx context.Context) error {
+func (s *Server) Shutdown() error {
 	s.logger.Info("Shutting down SIP server...")
-	return s.srv.Shutdown(ctx)
-}
-
-func (s *Server) ServeRequest(req *sip.Request, tx sip.ServerTransaction) {
-	method := req.Method()
-	s.logger.Info("Received SIP request: " + method)
-
-	callID := req.CallID()
-	instance := s.getInstanceForRequest(callID)
-
-	if instance != "instance1" { // Assume this is instance1
-		s.logger.Info("Request routed to different instance: " + instance)
-		return
-	}
-
-	switch method {
-	case sip.INVITE:
-		s.handleInvite(req, tx)
-	case sip.ACK:
-		s.handleAck(req, tx)
-	case sip.BYE:
-		s.handleBye(req, tx)
-	case sip.CANCEL:
-		s.handleCancel(req, tx)
-	case sip.REGISTER:
-		s.handleRegister(req, tx)
-	default:
-		s.handleUnsupportedMethod(req, tx)
-	}
+	return s.srv.Close()
 }
 
 func (s *Server) getInstanceForRequest(callID string) string {
@@ -104,32 +81,27 @@ func (s *Server) getInstanceForRequest(callID string) string {
 }
 
 func (s *Server) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
+	s.logger.Infof("handling invite request: %v", req)
 	// Create a new session
-	session := s.sessionManager.CreateSession(req.CallID())
+	session := s.sessionManager.CreateSession(req.CallID().String())
 
 	// Parse SDP offer
-	offerSDP, err := s.parseSDP(req.Body())
+	_, err := utils.ParseSDP(req.Body())
 	if err != nil {
-		s.sendErrorResponse(tx, 400, "Bad Request: Invalid SDP")
+		s.sendErrorResponse(req, tx, sip.StatusBadRequest, "Bad Request: Invalid SDP")
 		return
 	}
 
 	// Handle media setup
-	answerSDP, err := s.mediaGateway.HandleMediaSetup(offerSDP, session.ID)
+	answerSDP, err := session.rtc.SetOffer(string(req.Body()))
 	if err != nil {
-		s.sendErrorResponse(tx, 500, "Internal Server Error")
-		return
-	}
-
-	// Marshal the SDP answer
-	answerBytes, err := answerSDP.Marshal()
-	if err != nil {
-		s.sendErrorResponse(tx, 500, "Internal Server Error")
+		s.logger.Errorf("failed to generate answer: %v", err)
+		s.sendErrorResponse(req, tx, sip.StatusInternalServerError, "Internal Server Error")
 		return
 	}
 
 	// Create 200 OK response with SDP answer
-	resp := sip.NewResponseFromRequest(req, 200, "OK", answerBytes)
+	resp := sip.NewResponseFromRequest(req, 200, "OK", []byte(answerSDP))
 	if err := tx.Respond(resp); err != nil {
 		s.logger.Error("Failed to send 200 OK response: " + err.Error())
 	}
@@ -137,12 +109,23 @@ func (s *Server) handleInvite(req *sip.Request, tx sip.ServerTransaction) {
 
 func (s *Server) handleAck(req *sip.Request, tx sip.ServerTransaction) {
 	// ACK doesn't require a response, but we can use it to finalize the call setup
-	s.logger.Info("Received ACK for call: " + req.CallID())
+	s.logger.Info("Received ACK for call: " + req.CallID().String())
+
+}
+
+func (s *Server) handleOptions(req *sip.Request, tx sip.ServerTransaction) {
+	res := sip.NewResponseFromRequest(req, 200, "OK", nil)
+	tx.Respond(res)
 }
 
 func (s *Server) handleBye(req *sip.Request, tx sip.ServerTransaction) {
 	// End the session
-	s.sessionManager.DeleteSession(req.CallID())
+	callId := req.CallID()
+	if callId == nil {
+		s.logger.Error("call id is empty, not handling bye")
+	}
+
+	s.sessionManager.DeleteSession(callId.Value())
 
 	// Send 200 OK response
 	resp := sip.NewResponseFromRequest(req, 200, "OK", nil)
@@ -153,21 +136,21 @@ func (s *Server) handleBye(req *sip.Request, tx sip.ServerTransaction) {
 
 func (s *Server) handleCancel(req *sip.Request, tx sip.ServerTransaction) {
 	// Handle CANCEL request
-	s.logger.Info("Received CANCEL for call: " + req.CallID())
+	s.logger.Infof("Received CANCEL for call: %v", req.CallID())
 
 	// Send 200 OK for the CANCEL request
 	resp := sip.NewResponseFromRequest(req, 200, "OK", nil)
 	if err := tx.Respond(resp); err != nil {
 		s.logger.Error("Failed to send 200 OK response for CANCEL: " + err.Error())
 	}
-
+	tx.Terminate()
 	// TODO: Terminate the pending INVITE transaction if it exists
 }
 
 func (s *Server) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
-	authHeader := req.Header.Get("Authorization")
-	if !s.isValidToken(authHeader) {
-		s.sendErrorResponse(tx, 401, "Unauthorized")
+	authHeader := req.GetHeader("Authorization")
+	if authHeader == nil || !s.isValidToken(authHeader.Value()) {
+		s.sendErrorResponse(req, tx, sip.StatusUnauthorized, "Unauthorized")
 		return
 	}
 
@@ -179,52 +162,12 @@ func (s *Server) handleRegister(req *sip.Request, tx sip.ServerTransaction) {
 	}
 }
 
-func (s *Server) sendErrorResponse(tx sip.ServerTransaction, statusCode int, reason string) {
-	resp := sip.NewResponseFromRequest(tx.GetRequest(), statusCode, reason, nil)
+func (s *Server) sendErrorResponse(req *sip.Request, tx sip.ServerTransaction, statusCode sip.StatusCode, reason string) {
+	s.logger.Errorf("returning error: %v", reason)
+	resp := sip.NewResponseFromRequest(req, statusCode, reason, nil)
 	if err := tx.Respond(resp); err != nil {
 		s.logger.Error(fmt.Sprintf("Failed to send %d response: %s", statusCode, err.Error()))
 	}
-}
-
-func (s *Server) parseSDP(body []byte) (*sdp.SessionDescription, error) {
-	var sd sdp.SessionDescription
-	err := sd.Unmarshal(body)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse SDP: %w", err)
-	}
-	return &sd, nil
-}
-
-func (s *Server) generateSDP(sessionID string, mediaTypes []string) (*sdp.SessionDescription, error) {
-	sd := sdp.NewJSEPSessionDescription(false)
-	sd.Origin = sdp.Origin{
-		Username:       "-",
-		SessionID:      uint64(time.Now().Unix()),
-		SessionVersion: uint64(time.Now().Unix()),
-		NetworkType:    "IN",
-		AddressType:    "IP4",
-		UnicastAddress: "0.0.0.0",
-	}
-	sd.SessionName = "SIP Nexus Session"
-
-	for _, mediaType := range mediaTypes {
-		md := &sdp.MediaDescription{
-			MediaName: sdp.MediaName{
-				Media:   mediaType,
-				Port:    sdp.RangedPort{Value: 9},
-				Protos:  []string{"RTP", "AVP"},
-				Formats: []string{"0"}, // Assuming PCM-u as default
-			},
-			ConnectionInformation: &sdp.ConnectionInformation{
-				NetworkType: "IN",
-				AddressType: "IP4",
-				Address:     &sdp.Address{Address: "0.0.0.0"},
-			},
-		}
-		sd.MediaDescriptions = append(sd.MediaDescriptions, md)
-	}
-
-	return &sd, nil
 }
 
 func (s *Server) isValidToken(token string) bool {

@@ -5,11 +5,26 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/itzmanish/sipnexus/pkg/logger"
+	"github.com/itzmanish/sipnexus/pkg/media"
+)
+
+type SessionStatus uint8
+
+const (
+	SessionStatus_New SessionStatus = iota
+	SessionStatus_Ringing
+	SessionStatus_Connected
+	SessionStatus_Disconnected
+	SessionStatus_Failed
 )
 
 type Session struct {
-	ID        string
-	CallID    string
+	ID     string
+	CallID string
+	Status SessionStatus
+	rtc    media.MediaEngine
+
 	CreatedAt time.Time
 }
 
@@ -32,6 +47,7 @@ func (sm *SessionManager) CreateSession(callID string) *Session {
 		ID:        uuid.New().String(),
 		CallID:    callID,
 		CreatedAt: time.Now(),
+		rtc:       media.NewUDPMediaEngine(logger.NewLogger()),
 	}
 	sm.sessions[session.ID] = session
 	return session

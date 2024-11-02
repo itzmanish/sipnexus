@@ -12,7 +12,6 @@ import (
 type DTMFHandler struct {
 	logger        logger.Logger
 	dtmfPayload   uint8
-	eventChan     chan string
 	eventHandlers map[string]func(string)
 	mu            sync.RWMutex
 }
@@ -21,20 +20,13 @@ func NewDTMFHandler(logger logger.Logger, dtmfPayload uint8) *DTMFHandler {
 	return &DTMFHandler{
 		logger:        logger,
 		dtmfPayload:   dtmfPayload,
-		eventChan:     make(chan string, 100),
 		eventHandlers: map[string]func(string){},
 	}
 }
 
-func (d *DTMFHandler) Start() {
-	go d.processEvents()
-}
-
-func (d *DTMFHandler) processEvents() {
-	for event := range d.eventChan {
-		d.logger.Info(fmt.Sprintf("DTMF event received: %s", event))
-		d.notifyHandlers(event)
-	}
+func (d *DTMFHandler) processEvent(event string) {
+	d.logger.Info(fmt.Sprintf("DTMF event received: %s", event))
+	d.notifyHandlers(event)
 }
 
 func (d *DTMFHandler) HandleDTMF(packet *rtp.Packet) error {
@@ -52,7 +44,7 @@ func (d *DTMFHandler) HandleDTMF(packet *rtp.Packet) error {
 	char := d.mapDTMFEventToChar(event)
 
 	if endOfEvent {
-		d.eventChan <- char
+		go d.processEvent(char)
 	}
 
 	return nil
@@ -112,10 +104,7 @@ func (d *DTMFHandler) notifyHandlers(event string) {
 }
 
 func (d *DTMFHandler) IntegrateWithPion(pc *webrtc.PeerConnection) {
-	pc.OnDTMF(func(dtmf *webrtc.DTMFSender) {
-		d.logger.Info("DTMF tone received via pion/WebRTC")
-		// Process DTMF tones received via WebRTC
-	})
+	// TODO: need to find a way to get DTMF tone in a call
 }
 
 func (d *DTMFHandler) ProcessDTMFEvent(event string, sessionID string) {
